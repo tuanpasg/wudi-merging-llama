@@ -28,6 +28,13 @@ import transformers
 
 to_np = lambda x: x.data.cpu().numpy()
 
+def load_causallm(model_name_or_path: str, dtype=torch.bfloat16, device_map="cpu"):
+    return AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        torch_dtype=dtype,
+        device_map=device_map,
+        low_cpu_mem_usage=True,
+    )
 
 def args_inspector(func):
 

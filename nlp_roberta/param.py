@@ -259,17 +259,28 @@ class param:
         
         raise NotImplementedError
 
+    # def assign(self, model: torch.nn.Module):
+    #     device = model.device
+    #     for n, p in model.named_parameters():
+    #         if n in self.param_dict:
+    #             if p.shape != self.param_dict[n].shape:
+    #                 # for classifiers, default is num_labels=2 , probably has dimension mismatch
+    #                 print(f'>>> dimension mismatch! override model {n}')
+    #                 utils.rsetattr(model, n, torch.nn.Parameter(self.param_dict[n]))
+    #                 if  'classifier' in n:
+    #                     model.num_labels = self.param_dict[n].shape[0]
+    #                     print(f'>>> change num_labels to {model.num_labels}')
+    #                 continue
+    #             p.data.copy_(self.param_dict[n])
+    #     model.to(device)
+
     def assign(self, model: torch.nn.Module):
-        device = model.device
+        device = next(model.parameters()).device
         for n, p in model.named_parameters():
             if n in self.param_dict:
                 if p.shape != self.param_dict[n].shape:
-                    # for classifiers, default is num_labels=2 , probably has dimension mismatch
                     print(f'>>> dimension mismatch! override model {n}')
                     utils.rsetattr(model, n, torch.nn.Parameter(self.param_dict[n]))
-                    if  'classifier' in n:
-                        model.num_labels = self.param_dict[n].shape[0]
-                        print(f'>>> change num_labels to {model.num_labels}')
                     continue
                 p.data.copy_(self.param_dict[n])
         model.to(device)

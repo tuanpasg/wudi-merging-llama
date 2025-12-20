@@ -1,0 +1,108 @@
+import argparse
+import torch
+from transformers import AutoTokenizer
+import utils
+from param import param
+from merge import MergingMethod
+
+
+BASE = "meta-llama/Llama-3.2-3B"
+
+FT_MODELS = [
+    ("instruction", "MergeBench/Llama-3.2-3B_instruction"),
+    ("math",        "MergeBench/Llama-3.2-3B_math"),
+    ("coding",      "MergeBench/Llama-3.2-3B_coding"),
+]
+
+
+def parse_args():
+    ap = argparse.ArgumentParser("Merge Llama-3.2-3B MergeBench finetunes (merge-only)")
+    ap.add_argument("--out", required=True, help="Output dir for merged model")
+
+    ap.add_argument("--scaling", type=float, default=0.3333333333,
+                    help="Scaling applied to merged task vector (TA typical: 1/num_tasks; for WUDI also supported)")
+    ap.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
+    ap.add_argument("--device_map", default="cpu", help="HF loading device_map (cpu is safest)")
+
+    ap.add_argument("--merge_method", default="task_arithmetic",
+                    help="Implemented in merge.MergingMethod (e.g. task_arithmetic, wudi_merge)")
+
+    ap.add_argument("--exclude", nargs="*", default=[],
+                    help="Optional regex patterns to exclude param names (e.g. '.*lm_head.*')")
+
+    # ---- WUDI specific knobs (only used if merge_method == wudi_merge) ----
+    ap.add_argument("--wudi_iter", type=int, default=200)
+    ap.add_argument("--wudi_lr", type=float, default=1e-5)
+    ap.add_argument("--wudi_weight_decay", type=float, default=0.0)
+    ap.add_argument("--wudi_device", default="cuda", help="cuda recommended; cpu will be very slow")
+    ap.add_argument("--wudi_include", nargs="*", default=None,
+                    help="Regex list of keys to WUDI-optimize (default targets q/k/v/o + gate/up/down proj weights)")
+    ap.add_argument("--wudi_exclude", nargs="*", default=None,
+                    help="Regex list of keys to exclude from WUDI optimization")
+    ap.add_argument("--wudi_fallback", choices=["task_arithmetic", "zero"], default="task_arithmetic",
+                    help="How to merge keys not optimized by WUDI")
+    return ap.parse_args()
+
+
+def main():
+    args = parse_args()
+    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+    dtype = dtype_map[args.dtype]
+
+    # 1) Load base + finetunes (CausalLM)
+    base_model = utils.load_causallm(BASE, dtype=dtype, device_map=args.device_map)
+    ft_models = []
+    ft_names = []
+    for name, mid in FT_MODELS:
+        ft_names.append(name)
+        ft_models.append(utils.load_causallm(mid, dtype=dtype, device_map=args.device_map))
+
+    # 2) Wrap into param objects
+    base_p = param(base_model)
+    ft_ps = [param(m) for m in ft_models]
+
+    # 3) Optional filtering (regex exclude)
+    if args.exclude:
+        import re
+        def keep_param(n: str, _t: torch.Tensor):
+            return not any(re.match(pat, n) for pat in args.exclude)
+
+        base_p.filter(keep_param)
+        for p in ft_ps:
+            p.filter(keep_param)
+
+    # 4) Merge
+    merger = MergingMethod(models_to_merge=ft_ps, models_name=ft_names)
+    if not hasattr(merger, args.merge_method):
+        raise ValueError(f"Unknown merge_method={args.merge_method}. "
+                         f"Pick one implemented in merge.MergingMethod")
+
+    merge_fn = getattr(merger, args.merge_method)
+
+    if args.merge_method == "wudi_merge":
+        merged_p = merge_fn(
+            base_model=base_p,
+            models_to_merge=ft_ps,
+            scaling=args.scaling,
+            iter_num=args.wudi_iter,
+            lr=args.wudi_lr,
+            weight_decay=args.wudi_weight_decay,
+            device=args.wudi_device,
+            include=args.wudi_include,
+            exclude=args.wudi_exclude,
+            fallback=args.wudi_fallback,
+        )
+    else:
+        # default path (e.g., task_arithmetic)
+        merged_p = merge_fn(base_model=base_p, models_to_merge=ft_ps, scaling=args.scaling)
+
+    # 5) Write merged weights into a real HF model + save
+    merged_p.assign(base_model)
+    base_model.save_pretrained(args.out, safe_serialization=True)
+    AutoTokenizer.from_pretrained(BASE).save_pretrained(args.out)
+
+    print("Saved merged model to:", args.out)
+
+
+if __name__ == "__main__":
+    main()
