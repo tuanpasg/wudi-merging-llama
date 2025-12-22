@@ -2,9 +2,10 @@ import argparse
 import torch
 from transformers import AutoTokenizer
 import utils
+from utils import write_merge_readme
 from param import param
 from merge import MergingMethod
-
+import time
 
 BASE = "meta-llama/Llama-3.2-3B"
 
@@ -79,6 +80,8 @@ def main():
 
     merge_fn = getattr(merger, args.merge_method)
 
+    start = time.perf_counter()
+    
     if args.merge_method == "wudi_merge":
         merged_p = merge_fn(
             base_model=base_p,
@@ -91,15 +94,25 @@ def main():
             include=args.wudi_include,
             exclude=args.wudi_exclude,
             fallback=args.wudi_fallback,
+            eps=1e-12,
+            verbose=False
         )
     else:
         # default path (e.g., task_arithmetic)
         merged_p = merge_fn(base_model=base_p, models_to_merge=ft_ps, scaling=args.scaling)
 
+    runtime_sec = time.perf_counter() - start
     # 5) Write merged weights into a real HF model + save
     merged_p.assign(base_model)
     base_model.save_pretrained(args.out, safe_serialization=True)
     AutoTokenizer.from_pretrained(BASE).save_pretrained(args.out)
+    
+    write_merge_readme(
+        save_path=args.out,
+        args=args,
+        ft_ckpts=[mid for _, mid in FT_MODELS],
+        runtime_sec=runtime_sec,
+    )
 
     print("Saved merged model to:", args.out)
 

@@ -25,6 +25,9 @@ from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoModelF
 import os
 import torch
 import transformers
+import json
+from pathlib import Path
+from typing import Any, Dict, List
 
 to_np = lambda x: x.data.cpu().numpy()
 
@@ -35,6 +38,38 @@ def load_causallm(model_name_or_path: str, dtype=torch.bfloat16, device_map="cpu
         device_map=device_map,
         low_cpu_mem_usage=True,
     )
+
+def write_merge_readme(save_path: str, args: Any, ft_ckpts: List[str], runtime_sec: float):
+    """
+    Create README.md summarizing the merged model and merge settings.
+
+    Args:
+        save_path: Directory where the merged model is saved.
+        args: argparse Namespace (or any obj with __dict__/vars()) of CLI args.
+        kwargs: Extra keyword args passed to the merge function.
+        ft_ckpts: List of fine-tuned checkpoint names/paths merged.
+        runtime_sec: Merge runtime in seconds.
+    """
+    Path(save_path).mkdir(parents=True, exist_ok=True)
+    readme_path = os.path.join(save_path, "README.md")
+
+    args_dict = vars(args) if hasattr(args, "__dict__") else dict(args)
+    content = [
+        "# Merged Model",
+        f"- Base model: `{args_dict.get('base_model', 'N/A')}`",
+        f"- Algorithm: `{args_dict.get('merge_method', args_dict.get('algo', 'N/A'))}`",
+        f"- Save path: `{save_path}`",
+        f"- Fine-tuned checkpoints: {ft_ckpts}",
+        f"- Merge runtime (s): {runtime_sec:.3f}",
+        "",
+        "## Arguments",
+        "```json",
+        json.dumps(args_dict, indent=2),
+        "```",
+        "",
+    ]
+    with open(readme_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(content))
 
 def args_inspector(func):
 

@@ -577,10 +577,11 @@ class MergingMethod:
 
             # keys not shared / shape mismatch -> fallback
             if any(v.shape != t0.shape for v in vecs_cpu):
+                print(f'{k} is not optimized via WUDI due to Shape Mismatch')
                 if fallback == "zero":
                     merged_tv[k] = torch.zeros_like(t0)
                 else:
-                    merged_tv[k] = torch.stack(vecs_cpu, dim=0).mean(dim=0)
+                    merged_tv[k] = torch.stack(vecs_cpu, dim=0).sum(dim=0)
                 continue
 
             if _use_wudi_for_key(k, t0):
@@ -615,10 +616,11 @@ class MergingMethod:
 
             else:
                 # fallback for embeddings / norms / lm_head / 1D etc.
+                print(f'{k} is not optimized with WUDI')
                 if fallback == "zero":
                     merged_tv[k] = torch.zeros_like(t0)
                 else:
-                    merged_tv[k] = torch.stack(vecs_cpu, dim=0).mean(dim=0)
+                    merged_tv[k] = torch.stack(vecs_cpu, dim=0).sum(dim=0)
 
         # scale the merged task vector and apply to base
         merged_task_param = param({k: (scaling * v) for k, v in merged_tv.items()})
