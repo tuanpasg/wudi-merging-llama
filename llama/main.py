@@ -9,6 +9,7 @@ from merge import MergingMethod
 import time
 from pathlib import Path
 import os
+import re
 
 BASE = "meta-llama/Llama-3.2-3B"
 
@@ -16,6 +17,11 @@ FT_MODELS = [
     ("instruction", "MergeBench/Llama-3.2-3B_instruction"),
     ("math",        "MergeBench/Llama-3.2-3B_math"),
     ("coding",      "MergeBench/Llama-3.2-3B_coding"),
+]
+
+DEFAULT_EXCLUDE = [
+    r".*embed_tokens\.weight$",
+    r".*lm_head\.weight$",
 ]
 
 def write_merge_readme(save_path: str, args: Any, ft_ckpts: List[str], runtime_sec: float):
@@ -63,17 +69,23 @@ def parse_args():
                     help="Implemented in merge.MergingMethod (e.g. task_arithmetic, wudi_merge)")
 
     ap.add_argument("--exclude", nargs="*", default=[],
-                    help="Optional regex patterns to exclude param names (e.g. '.*lm_head.*')")
+                    help="Additional regex patterns to exclude from merging; default excludes embeddings and lm_head")
 
     # ---- WUDI specific knobs (only used if merge_method == wudi_merge) ----
+    ap.add_argument("--wudi_variant",
+                    choices=[
+                        "wudi_all_linear",
+                        "wudi_attention_only",
+                        "wudi_mlp_only",
+                        "wudi_last_7_layers",
+                        "wudi_last_14_layers",
+                    ],
+                    default="wudi_all_linear",
+                    help="Which parameter subset to optimize with WUDI")
     ap.add_argument("--wudi_iter", type=int, default=200)
     ap.add_argument("--wudi_lr", type=float, default=1e-5)
     ap.add_argument("--wudi_weight_decay", type=float, default=0.0)
     ap.add_argument("--wudi_device", default="cuda", help="cuda recommended; cpu will be very slow")
-    ap.add_argument("--wudi_include", nargs="*", default=None,
-                    help="Regex list of keys to WUDI-optimize (default targets q/k/v/o + gate/up/down proj weights)")
-    ap.add_argument("--wudi_exclude", nargs="*", default=None,
-                    help="Regex list of keys to exclude from WUDI optimization")
     ap.add_argument("--wudi_fallback", choices=["task_arithmetic", "zero"], default="task_arithmetic",
                     help="How to merge keys not optimized by WUDI")
     return ap.parse_args()
@@ -81,6 +93,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    args.effective_exclude = DEFAULT_EXCLUDE + args.exclude
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
     dtype = dtype_map[args.dtype]
 
@@ -96,11 +109,10 @@ def main():
     base_p = param(base_model)
     ft_ps = [param(m) for m in ft_models]
 
-    # 3) Optional filtering (regex exclude)
-    if args.exclude:
-        import re
+    # 3) Filtering: excluded keys are removed from merging and keep base values.
+    if args.effective_exclude:
         def keep_param(n: str, _t: torch.Tensor):
-            return not any(re.match(pat, n) for pat in args.exclude)
+            return not any(re.match(pat, n) for pat in args.effective_exclude)
 
         base_p.filter(keep_param)
         for p in ft_ps:
@@ -125,8 +137,7 @@ def main():
             lr=args.wudi_lr,
             weight_decay=args.wudi_weight_decay,
             device=args.wudi_device,
-            include=args.wudi_include,
-            exclude=args.wudi_exclude,
+            variant=args.wudi_variant,
             fallback=args.wudi_fallback,
             eps=1e-12,
             verbose=False

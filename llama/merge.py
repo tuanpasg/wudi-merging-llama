@@ -3,7 +3,6 @@ import tqdm
 import re
 import utils
 from param import param
-from pathlib import Path
 
 class MergingMethod:
 
@@ -21,6 +20,20 @@ class MergingMethod:
         return self.models_to_merge[self.models_name[model_name]]
 
     @utils.args_inspector
+    @torch.inference_mode()
+    def task_arithmetic(
+        self,
+        base_model: param,
+        models_to_merge: list,
+        scaling: float = 1.0,
+    ):
+        task_vectors = [
+            model - base_model
+            for model in models_to_merge
+        ]
+        return base_model + scaling * sum(task_vectors)
+
+    @utils.args_inspector
     def wudi_merge(
         self,
         base_model: param,
@@ -34,8 +47,7 @@ class MergingMethod:
         device: str = "cuda",   # "cuda" strongly recommended; "cpu" will be very slow
 
         # which params to run WUDI on
-        include: list = None,   # list of regex; if None, defaults to Llama proj matrices
-        exclude: list = None,   # list of regex
+        variant: str = "wudi_all_linear",
 
         # fallback for keys not WUDI-optimized
         fallback: str = "task_arithmetic",  # "task_arithmetic" or "zero"
@@ -46,29 +58,66 @@ class MergingMethod:
         WUDI-style merge:
           - Compute task vectors tv_i = ft_i - base
           - For selected 2D keys, optimize a merged task vector per key via redundancy loss
-          - For other keys, fallback to mean(tv_i) (Task Arithmetic)
+          - For other keys, fallback to sum(tv_i) (Task Arithmetic)
           - Return base + scaling * merged_task_vector
         """
 
-        if include is None:
-            # Llama projection matrices only (safe & close to typical "merge only the big 2D weights")
-            include = [
-                r".*self_attn\.(q_proj|k_proj|v_proj|o_proj)\.weight$",
-                r".*mlp\.(gate_proj|up_proj|down_proj)\.weight$",
-            ]
-
-        if exclude is None:
-            exclude = []
+        attention_proj = r".*self_attn\.(q_proj|k_proj|v_proj|o_proj)\.weight$"
+        mlp_proj = r".*mlp\.(gate_proj|up_proj|down_proj)\.weight$"
+        projection_patterns = [attention_proj, mlp_proj]
+        layer_pattern = re.compile(r".*model\.layers\.(\d+)\..*")
 
         def _match_any(patterns, name: str) -> bool:
             return any(re.match(p, name) for p in patterns)
 
+        def _infer_layer_count(keys) -> int:
+            layer_indices = []
+            for name in keys:
+                match = layer_pattern.match(name)
+                if match:
+                    layer_indices.append(int(match.group(1)))
+            if not layer_indices:
+                return 0
+            return max(layer_indices) + 1
+
+        base_keys = list(base_model.keys())
+        num_layers = _infer_layer_count(base_keys)
+
+        if variant == "wudi_all_linear":
+            variant_include = None
+            selected_layers = None
+        elif variant == "wudi_attention_only":
+            variant_include = [attention_proj]
+            selected_layers = None
+        elif variant == "wudi_mlp_only":
+            variant_include = [mlp_proj]
+            selected_layers = None
+        elif variant in {"wudi_last_7_layers", "wudi_last_14_layers"}:
+            if num_layers == 0:
+                raise ValueError("Could not infer Llama layer count from model.layers.{idx} parameter names")
+            last_n = 7 if variant == "wudi_last_7_layers" else 14
+            start_layer = max(num_layers - last_n, 0)
+            selected_layers = set(range(start_layer, num_layers))
+            variant_include = projection_patterns
+        else:
+            raise ValueError(
+                f"Unknown WUDI variant={variant}. Choose one of: "
+                "wudi_all_linear, wudi_attention_only, wudi_mlp_only, "
+                "wudi_last_7_layers, wudi_last_14_layers"
+            )
+
+        def _layer_index(name: str):
+            match = layer_pattern.match(name)
+            if not match:
+                return None
+            return int(match.group(1))
+
         def _use_wudi_for_key(name: str, t: torch.Tensor) -> bool:
             if t.ndim != 2:
                 return False
-            if include and not _match_any(include, name):
+            if variant_include and not _match_any(variant_include, name):
                 return False
-            if exclude and _match_any(exclude, name):
+            if selected_layers is not None and _layer_index(name) not in selected_layers:
                 return False
             return True
 
@@ -82,11 +131,9 @@ class MergingMethod:
 
         merged_tv = {}
 
-        # iterate over base keys (keeps structure stable)
-        base_keys = list(base_model.keys())
-
         for k in tqdm.tqdm(base_keys, desc="WUDI merge (per-key)"):
             if k not in tvs[0]:
+                print(f'[ERROR] {k} is bypassed WUDI optimization due to Missing')
                 continue
 
             # gather per-task tensors (keep dtype consistent)
@@ -95,7 +142,7 @@ class MergingMethod:
 
             # keys not shared / shape mismatch -> fallback
             if any(v.shape != t0.shape for v in vecs_cpu):
-                print(f'{k} is not optimized via WUDI due to Shape Mismatch')
+                print(f'[ERROR] {k} is bypassed WUDI optimization due to Shape Mismatch')
                 if fallback == "zero":
                     merged_tv[k] = torch.zeros_like(t0)
                 else:
@@ -130,11 +177,11 @@ class MergingMethod:
                 merged_tv[k] = merging_vector.detach().to("cpu")
 
                 if verbose:
-                    pass  # keep quiet unless you want per-key logging
+                     print(f'[INFO] {k} is optimized under WUDI')
 
             else:
                 # fallback for embeddings / norms / lm_head / 1D etc.
-                print(f'{k} is not optimized with WUDI')
+                print(f'{k} is not optimized with WUDI and fallback to TA')
                 if fallback == "zero":
                     merged_tv[k] = torch.zeros_like(t0)
                 else:

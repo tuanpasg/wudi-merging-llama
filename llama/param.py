@@ -1,18 +1,9 @@
 import torch
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 import tqdm
 import re
 import torch.nn as nn
-import copy
-import sparsify
 import utils
-import sys
-import transformers
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoModelForSequenceClassification, AutoTokenizer
-import os
-import functools
-from collections import defaultdict, OrderedDict
-import torch
 
 kw_filter_func = lambda n,p,exclude_param : not any([
     re.match(exclude_pattern, n) 
