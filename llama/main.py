@@ -1,11 +1,14 @@
 import argparse
+import json
+from typing import Any, List
 import torch
 from transformers import AutoTokenizer
 import utils
-from utils import write_merge_readme
 from param import param
 from merge import MergingMethod
 import time
+from pathlib import Path
+import os
 
 BASE = "meta-llama/Llama-3.2-3B"
 
@@ -15,6 +18,37 @@ FT_MODELS = [
     ("coding",      "MergeBench/Llama-3.2-3B_coding"),
 ]
 
+def write_merge_readme(save_path: str, args: Any, ft_ckpts: List[str], runtime_sec: float):
+    """
+    Create README.md summarizing the merged model and merge settings.
+
+    Args:
+        save_path: Directory where the merged model is saved.
+        args: argparse Namespace (or any obj with __dict__/vars()) of CLI args.
+        kwargs: Extra keyword args passed to the merge function.
+        ft_ckpts: List of fine-tuned checkpoint names/paths merged.
+        runtime_sec: Merge runtime in seconds.
+    """
+    Path(save_path).mkdir(parents=True, exist_ok=True)
+    readme_path = os.path.join(save_path, "README.md")
+
+    args_dict = vars(args) if hasattr(args, "__dict__") else dict(args)
+    content = [
+        "# Merged Model",
+        f"- Base model: `{args_dict.get('base_model', 'N/A')}`",
+        f"- Algorithm: `{args_dict.get('merge_method', args_dict.get('algo', 'N/A'))}`",
+        f"- Save path: `{save_path}`",
+        f"- Fine-tuned checkpoints: {ft_ckpts}",
+        f"- Merge runtime (s): {runtime_sec:.3f}",
+        "",
+        "## Arguments",
+        "```json",
+        json.dumps(args_dict, indent=2),
+        "```",
+        "",
+    ]
+    with open(readme_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(content))
 
 def parse_args():
     ap = argparse.ArgumentParser("Merge Llama-3.2-3B MergeBench finetunes (merge-only)")
