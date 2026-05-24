@@ -79,6 +79,7 @@ def parse_args():
                         "wudi_mlp_only",
                         "wudi_last_7_layers",
                         "wudi_last_14_layers",
+                        "wudi_last_21_layers",
                     ],
                     default="wudi_all_linear",
                     help="Which parameter subset to optimize with WUDI")
@@ -140,7 +141,7 @@ def main():
             variant=args.wudi_variant,
             fallback=args.wudi_fallback,
             eps=1e-12,
-            verbose=False
+            verbose=True
         )
     else:
         # default path (e.g., task_arithmetic)

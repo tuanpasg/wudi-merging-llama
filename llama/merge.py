@@ -92,10 +92,15 @@ class MergingMethod:
         elif variant == "wudi_mlp_only":
             variant_include = [mlp_proj]
             selected_layers = None
-        elif variant in {"wudi_last_7_layers", "wudi_last_14_layers"}:
+        elif variant in {"wudi_last_7_layers", "wudi_last_14_layers", "wudi_last_21_layers"}:
             if num_layers == 0:
                 raise ValueError("Could not infer Llama layer count from model.layers.{idx} parameter names")
-            last_n = 7 if variant == "wudi_last_7_layers" else 14
+            last_n_by_variant = {
+                "wudi_last_7_layers": 7,
+                "wudi_last_14_layers": 14,
+                "wudi_last_21_layers": 21,
+            }
+            last_n = last_n_by_variant[variant]
             start_layer = max(num_layers - last_n, 0)
             selected_layers = set(range(start_layer, num_layers))
             variant_include = projection_patterns
@@ -103,7 +108,7 @@ class MergingMethod:
             raise ValueError(
                 f"Unknown WUDI variant={variant}. Choose one of: "
                 "wudi_all_linear, wudi_attention_only, wudi_mlp_only, "
-                "wudi_last_7_layers, wudi_last_14_layers"
+                "wudi_last_7_layers, wudi_last_14_layers, wudi_last_21_layers"
             )
 
         def _layer_index(name: str):
@@ -181,7 +186,7 @@ class MergingMethod:
 
             else:
                 # fallback for embeddings / norms / lm_head / 1D etc.
-                print(f'{k} is not optimized with WUDI and fallback to TA')
+                print(f'{k} is not optimized with WUDI and fallback to {fallback}')
                 if fallback == "zero":
                     merged_tv[k] = torch.zeros_like(t0)
                 else:
