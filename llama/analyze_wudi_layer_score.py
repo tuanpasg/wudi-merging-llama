@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import fnmatch
 import warnings
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -117,7 +118,14 @@ def dtype_from_str(s: str) -> torch.dtype:
 
 
 def match_any(patterns: Iterable[str], name: str) -> bool:
-    return any(re.match(pat, name) for pat in patterns)
+    for pat in patterns:
+        try:
+            if re.match(pat, name):
+                return True
+        except re.error:
+            if fnmatch.fnmatchcase(name, pat):
+                return True
+    return False
 
 
 def selected_key(name: str, tensor: torch.Tensor, include: List[str], exclude: List[str]) -> bool:
